@@ -3637,6 +3637,35 @@ finish_open:
 	error = complete_walk(nd);
 	if (error)
 		return error;
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	/* The source redirects between open_last_lookups() and do_open(); 5.4
+	 * fuses both into do_last(), so redirect here.  Anything later and the
+	 * real file has already been opened, and O_TRUNC has emptied it.
+	 * Swapping nd->path rather than the nameidata, as the source does,
+	 * keeps do_filp_open()'s RCU and ESTALE retries intact.
+	 */
+	if (nd->dfd != -1) {
+		struct inode *inode = d_backing_inode(nd->path.dentry);
+
+		if (inode && SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {
+			struct filename *fake_filename;
+
+			fake_filename = susfs_open_redirect_spoof_do_sys_openat(inode);
+			if (fake_filename && !IS_ERR(fake_filename)) {
+				struct path fake_path;
+
+				/* filename_lookup() puts fake_filename for us. */
+				error = filename_lookup(nd->dfd, fake_filename,
+							LOOKUP_FOLLOW, &fake_path, NULL);
+				if (error)
+					goto out;
+				path_put(&nd->path);
+				nd->path = fake_path;
+				nd->inode = d_backing_inode(fake_path.dentry);
+			}
+		}
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	audit_inode(nd->name, nd->path.dentry, 0);
 	if (open_flag & O_CREAT) {
 		error = -EISDIR;
@@ -3819,10 +3848,6 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 static struct file *path_openat(struct nameidata *nd,
 			const struct open_flags *op, unsigned flags)
 {
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	int old_dfd = nd->dfd;
-	struct filename *fake_filename = NULL;
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct file *file;
 	int error;
 

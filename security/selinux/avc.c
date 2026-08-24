@@ -731,6 +731,21 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 
 	rc = security_sid_to_context(sad->state, sad->tsid, &scontext,
 				     &scontext_len);
+
+#ifdef CONFIG_KSU_SUSFS
+	if (static_branch_likely(&susfs_is_avc_log_spoofing_enabled)) {
+		if (unlikely(sad->tsid == susfs_ksu_sid)) {
+			if (rc)
+				audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);
+			else {
+				audit_log_format(ab, " tcontext=%s", "u:r:priv_app:s0:c512,c768");
+				kfree(scontext);
+			}
+			goto bypass_orig_flow;
+		}
+	}
+#endif
+
 	if (rc)
 		audit_log_format(ab, " tsid=%d", sad->tsid);
 	else {
@@ -738,6 +753,9 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 		kfree(scontext);
 	}
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow:
+#endif
 	audit_log_format(ab, " tclass=%s", secclass_map[sad->tclass-1].name);
 
 	if (sad->denied)

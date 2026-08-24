@@ -10,7 +10,9 @@
 #include <linux/statfs.h>
 
 #define SUSFS_VERSION "v2.2.0"
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
+// GKI 2.0 starts at 5.10, not 5.0 - upstream reports every 5.0-5.9 kernel as GKI,
+// including on its own kernel-5.4 branch.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,10,0)
 #define SUSFS_VARIANT "NON-GKI"
 #else
 #define SUSFS_VARIANT "GKI"

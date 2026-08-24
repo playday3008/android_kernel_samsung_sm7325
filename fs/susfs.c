@@ -20,6 +20,12 @@
 #include <linux/workqueue.h>
 #include <linux/fsnotify_backend.h>
 #include <linux/jump_label.h>
+#include <linux/version.h> // We need check kernel version.
+#include <linux/task_work.h>
+#include <linux/rwsem.h>
+#ifndef TWA_RESUME
+#define TWA_RESUME true
+#endif
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
 #include "mount.h"
@@ -1356,12 +1362,10 @@ static int watch_one_dir(struct watch_dir *wd)
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
-static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
-											struct inode *inode, struct inode *dir,
-											const struct qstr *file_name, u32 cookie)
+static SUSFS_DECL_FSNOTIFY_OPS(susfs_handle_sdcard_inode_event)
 {
-	if (!file_name || file_name->len != 7 ||
-	    memcmp(file_name->name, "Android", 7))
+	if (!file_name || susfs_fname_len(file_name) != 7 ||
+	    memcmp(susfs_fname_arg(file_name), "Android", 7))
 		return 0;
 
 	if (test_and_set_bit(0, &sdcard_cleanup_scheduled))
@@ -1374,22 +1378,46 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 }
 
 static const struct fsnotify_ops fsnotify_ops = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 	.handle_inode_event = susfs_handle_sdcard_inode_event,
+#else
+	.handle_event = susfs_handle_sdcard_inode_event,
+#endif
 };
+
+static void __maybe_unused m_free(struct fsnotify_mark *m)
+{
+	if (m) {
+		kfree(m);
+	}
+}
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
 								struct fsnotify_mark **out)
 {
 	struct fsnotify_mark *m;
+	int ret;
 
 	m = kzalloc(sizeof(*m), GFP_KERNEL);
 	if (!m)
 		return -ENOMEM;
 
+/* From KernelSU */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
 	fsnotify_init_mark(m, g);
 	m->mask = mask;
+	ret = fsnotify_add_inode_mark(m, inode, 0);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+	fsnotify_init_mark(m, g);
+	m->mask = mask;
+	ret = fsnotify_add_mark(m, inode, NULL, 0);
+#else
+	fsnotify_init_mark(m, m_free);
+	m->mask = mask;
+	ret = fsnotify_add_mark(m, g, inode, NULL, 0);
+#endif
 
-	if (fsnotify_add_inode_mark(m, inode, 0)) {
+	if (ret) {
 		fsnotify_put_mark(m);
 		return -EINVAL;
 	}

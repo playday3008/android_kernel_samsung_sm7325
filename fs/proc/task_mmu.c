@@ -22,6 +22,9 @@
 #include <linux/mm_inline.h>
 #include <linux/freezer.h>
 #include <linux/ctype.h>
+#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+#include <linux/susfs_def.h>
+#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
 
 #include <asm/elf.h>
 #include <asm/tlb.h>
@@ -384,7 +387,7 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 			if (!ret) {
 				pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
 				start = vma->vm_start;
-				end = VMA_PAD_START(vma);
+				end = vma->vm_end;
 				show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
 				seq_pad(m, ' ');
 				if (spoofed_redirected_name)
@@ -1022,7 +1025,18 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
 	hold_task_mempolicy(priv);
 
 	for (vma = priv->mm->mmap; vma; vma = vma->vm_next) {
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (vma->vm_file) {
+			struct inode *inode = file_inode(vma->vm_file);
+			if (SUSFS_IS_INODE_SUS_MAP(inode)) {
+				goto bypass_orig_flow;
+			}
+		}
+#endif
 		smap_gather_stats(vma, &mss);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+bypass_orig_flow:
+#endif
 		last_vma_end = vma->vm_end;
 	}
 
@@ -1745,7 +1759,28 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
 		ret = down_read_killable(&mm->mmap_sem);
 		if (ret)
 			goto out_free;
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		vma = find_vma(mm, start_vaddr);
+		if (vma && vma->vm_file &&
+		    SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))) {
+			unsigned long nr = (end - start_vaddr) >> PAGE_SHIFT;
+
+			/* Report the range absent rather than walking it.
+			 * Zeroing pm.buffer[0] after the walk left the rest
+			 * of the chunk intact, and skipping outright would
+			 * leave pm.pos at 0, so count would not be consumed
+			 * and the next chunk's entries would be copied out
+			 * at this chunk's offset.
+			 */
+			pm.pos = nr < pm.len ? nr : pm.len;
+			memset(pm.buffer, 0, pm.pos * PM_ENTRY_BYTES);
+			goto skip_walk;
+		}
+#endif
 		ret = walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+skip_walk:
+#endif
 		up_read(&mm->mmap_sem);
 		start_vaddr = end;
 

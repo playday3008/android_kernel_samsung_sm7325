@@ -98,6 +98,9 @@
 #include <linux/task_integrity.h>
 #include <linux/proca.h>
 #include <linux/cn_proc.h>
+#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+#include <linux/susfs_def.h>
+#endif
 #include <trace/events/oom.h>
 #include "internal.h"
 #include "fd.h"
@@ -1806,8 +1809,7 @@ static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)
 			len = strlen(tmp);
 			if (copy_to_user(buffer, tmp, len))
 				len = -EFAULT;
-			kfree(tmp);
-			return len;
+			goto out;
 		}
 	}
 #endif

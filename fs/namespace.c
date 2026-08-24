@@ -34,9 +34,33 @@
 #ifdef CONFIG_KDP_NS
 #include <linux/kdp.h>
 #endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#endif
 
 #include "pnode.h"
 #include "internal.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#ifdef CONFIG_KDP_NS
+/*
+ * KDP moves the vfsmount out of struct mount (struct kdp_mount holds a pointer
+ * to a separately allocated one), and SUS_MOUNT is not written for that layout:
+ * susfs_alloc_{unshare,non_unshare}_ksu_vfsmnt() never call
+ * kdp_mnt_alloc_vfsmount(), so the mount would be created without a vfsmount at
+ * all, and the __lookup_mnt() hook compares &p->mnt_parent->mnt, which is not
+ * the real vfsmount under KDP. Both fail on the first ksu mount rather than
+ * subtly, so refuse to build instead.
+ */
+#error "CONFIG_KSU_SUSFS_SUS_MOUNT does not support CONFIG_KDP_NS"
+#endif
+
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
+#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
+
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 
 /* Maximum number of mounts in a mount namespace */
 unsigned int sysctl_mount_max __read_mostly = 100000;
@@ -861,7 +885,10 @@ struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
 	// - The hook here is needed as a temp solution to hide sus mnts for zygote_next
 	//   spawned process since it just inherits the init mount namespace, the solution
 	//   here is simply return the mount that is not sus.
-	if (susfs_is_current_proc_umounted_for_zygote_next()) {
+	// - the zygote_next flag only gets set where the policy defines
+	//   u:r:zygote_next:s0, so keep covering plain umounted procs too.
+	if (susfs_is_current_proc_umounted_for_zygote_next() ||
+	    susfs_is_current_proc_umounted()) {
 		hlist_for_each_entry_rcu(p, head, mnt_hash)
 			if (p->mnt_id < DEFAULT_KSU_MNT_ID && &p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
 				return p;
@@ -3927,6 +3954,9 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 	copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;
 	if (user_ns != ns->user_ns)
 		copy_flags |= CL_SHARED_TO_SLAVE;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	copy_flags |= CL_COPY_MNT_NS;
+#endif
 #ifdef CONFIG_KDP_NS
 	new = copy_tree(old, ((struct kdp_mount *)old)->mnt->mnt_root, copy_flags);
 #else

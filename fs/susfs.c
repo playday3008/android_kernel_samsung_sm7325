@@ -760,12 +760,22 @@ out_copy_to_user:
 }
 
 void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
+	char *buf;
 	unsigned seq;
 
+	/* seq_puts() appends, so a retry would emit the cmdline twice.
+	 * Take a copy under the seqlock and print it once.
+	 */
+	buf = kmalloc(SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE, GFP_KERNEL);
+	if (!buf)
+		return;
 	do {
 		seq = read_seqbegin(&susfs_fake_cmdline_or_bootconfig_seqlock);
-		seq_puts(m, fake_cmdline_or_bootconfig);
+		strscpy(buf, fake_cmdline_or_bootconfig,
+				SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE);
 	} while (read_seqretry(&susfs_fake_cmdline_or_bootconfig_seqlock, seq));
+	seq_puts(m, buf);
+	kfree(buf);
 }
 #endif
 

@@ -4830,6 +4830,12 @@ int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt) {
 	struct mount *mnt = orig_mnt;
 	int mnt_id;
 
+	/* Not a ksu mount, so the loop below cannot advance. Skip the
+	 * global mount_lock write.
+	 */
+	if (orig_mnt->mnt_id < DEFAULT_KSU_MNT_ID)
+		return orig_mnt->mnt_id;
+
 	lock_mount_hash();
 	for (; mnt && mnt->mnt_parent && mnt != mnt->mnt_parent && mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }
 	mnt_id = mnt->mnt_id;
@@ -4840,6 +4846,16 @@ int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt) {
 /* - To retrieve the non sus vfsmount from vfsmount, takes a reference on &mnt->mnt and mnt->mnt.mnt_root */
 struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt) {
 	struct mount *mnt = real_mount(vfsmnt);
+
+	/* Not a ksu mount, so the loop below cannot advance. Skip the
+	 * global mount_lock write, but still take the references the
+	 * caller drops.
+	 */
+	if (mnt->mnt_id < DEFAULT_KSU_MNT_ID) {
+		mntget(vfsmnt);
+		dget(vfsmnt->mnt_root);
+		return vfsmnt;
+	}
 
 	lock_mount_hash();
 	for (; mnt && mnt->mnt_parent && mnt != mnt->mnt_parent && mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }

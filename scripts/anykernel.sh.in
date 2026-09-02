@@ -1,0 +1,26 @@
+### AnyKernel3 Ramdisk Mod Script
+
+properties() { '
+kernel.string=@KERNEL_STRING@
+do.devicecheck=1
+do.initd=0
+do.kernelfull=1
+do.kernelbackup=1
+do.cleanup=1
+do.cleanuponabort=0
+@DEVICE_NAMES@
+supported.versions=
+supported.patchlevels=
+'; }
+
+### AnyKernel install
+
+block=/dev/block/by-name/boot;
+is_slot_device=0;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+. tools/ak3-core.sh;
+
+dump_boot;
+write_boot;

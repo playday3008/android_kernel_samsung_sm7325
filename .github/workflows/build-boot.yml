@@ -1,0 +1,136 @@
+name: build boot.img
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: 'kernel branches/tags/shas, comma or newline separated'
+        required: true
+        default: 'lineage-23.2-ReSukiSU'
+      devices:
+        description: 'a52sxq, a73xq, m52xq'
+        required: true
+        default: 'a52sxq'
+      release:
+        description: 'publish the artifacts as a prerelease'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  CLANG_RELEASE: toolchain-clang-r530567
+  CLANG_TARBALL: clang-r530567.tar.gz
+  ANYKERNEL_REF: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        run: |
+          echo "matrix=$(scripts/plan.py "$REFS" "$DEVICES")" >> "$GITHUB_OUTPUT"
+        env:
+          REFS: ${{ inputs.refs }}
+          DEVICES: ${{ inputs.devices }}
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Check out CI branch
+        uses: actions/checkout@v7
+        with:
+          path: ci
+
+      - name: Check out kernel source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+          submodules: recursive
+          fetch-depth: 0
+          path: src
+
+      - name: Cache clang
+        id: clang-cache
+        uses: actions/cache@v6
+        with:
+          path: clang
+          key: ${{ env.CLANG_RELEASE }}
+
+      - name: Fetch clang
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p clang
+          gh release download "$CLANG_RELEASE" --pattern "$CLANG_TARBALL" \
+            --repo "$GITHUB_REPOSITORY" --output - | tar xz -C clang
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build
+        run: |
+          echo "CLANG=$PWD/clang" >> "$GITHUB_ENV"
+          CLANG=$PWD/clang ci/scripts/build.sh "${{ matrix.device }}" src out
+
+      - name: Collect kernel artifacts
+        run: |
+          mkdir -p art
+          cp out/arch/arm64/boot/Image art/
+          cp out/.config art/config
+          echo "KERNEL_RELEASE=$(cat out/include/config/kernel.release)" >> "$GITHUB_ENV"
+
+      - name: Pack boot.img
+        run: |
+          set -e
+          . "ci/devices/${{ matrix.device }}/meta.env"
+          ramdisk="ci/devices/${{ matrix.device }}/ramdisk.img"
+          if [ ! -f "$ramdisk" ]; then
+            echo "::notice::${{ matrix.device }} has no stock ramdisk asset, skipping boot.img"
+            exit 0
+          fi
+          ci/scripts/pack_boot.py pack \
+            --kernel art/Image --ramdisk "$ramdisk" --out art/boot.img \
+            --os-version "$BOOT_OS_VERSION" \
+            --os-patch-level "$BOOT_OS_PATCH_LEVEL" \
+            --cmdline "$BOOT_CMDLINE"
+          ci/scripts/pack_boot.py info art/boot.img
+
+      - name: Pack vendor modules
+        run: ci/scripts/pack_modules.sh "${{ matrix.device }}" src out art/vendor-modules.tar.gz
+
+      - name: Pack AnyKernel3 zip
+        run: |
+          ci/scripts/pack_anykernel.sh "${{ matrix.device }}" art/Image "$KERNEL_RELEASE" \
+            "art/AnyKernel3-${{ matrix.slug }}.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.slug }}
+          path: art/
+          if-no-files-found: error
+
+      - name: Publish prerelease
+        if: inputs.release
+        run: |
+          tag="build-${{ matrix.slug }}-$KERNEL_RELEASE"
+          gh release create "$tag" --prerelease \
+            --title "${{ matrix.device }} $KERNEL_RELEASE" \
+            --notes "ref ${{ matrix.ref }}, built from ${{ github.sha }}" \
+            || gh release edit "$tag" --prerelease
+          gh release upload "$tag" art/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -115,6 +115,11 @@ struct selinux_state selinux_state __rticdata;
 struct selinux_state selinux_state;
 #endif
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running __read_mostly;
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 /* SECMARK reference count */
 static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);
 
@@ -7142,7 +7147,11 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(d_instantiate, selinux_d_instantiate),
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
+#ifdef CONFIG_KSU_SUSFS
+	LSM_HOOK_INIT(setprocattr, my_setprocattr),
+#else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	LSM_HOOK_INIT(ismaclabel, selinux_ismaclabel),
 	LSM_HOOK_INIT(secid_to_secctx, selinux_secid_to_secctx),
